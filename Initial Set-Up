@@ -89,7 +89,6 @@ void setup() {
   pinMode(grab_release, OUTPUT); //Blue LED
   pinMode(flipping, OUTPUT); //Blue LED
   pinMode(pourLight, OUTPUT); //Blue LED
-  
 
   digitalWrite(forward_backward, LOW);
   digitalWrite(up_down, LOW);
@@ -98,7 +97,6 @@ void setup() {
   digitalWrite(flipping, LOW);
   digitalWrite(pourLight, LOW);
   
-
   pwm.begin();
 
   pwm.setPWMFreq(60);  // Analog servos run at ~60 Hz updates
@@ -285,7 +283,6 @@ void pour(){
     }
     pouring = true;
   }
-  
 }
 
 void moveHand() {
@@ -304,7 +301,6 @@ void moveHand() {
     }
   }
 }
-
 
 void movement() {
   if (setting == 0) {
@@ -383,6 +379,7 @@ void loop() {
   Serial.print(noiseThreshold_2);
   Serial.print("   :: Setting: ");
   Serial.println(setting);
+  
   if (actualEMG_1 < 0 /*noiseThreshold_1 + barrier */&& setting == 0) { //check if user wants to switch the setting
     if (rl == true){
       rl = false; 
