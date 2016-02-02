@@ -1,0 +1,417 @@
+// Extellas, Jan 28 12:33pm
+// _______________________________________
+// include libraries for Adafruit PWM Servo shield
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+// called this way, it uses the default address 0x40 (default I2C address (Can change if needed by shorting address tabs on board)
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+
+#define SERVOMIN_hand 630 // this is the 'minimum' pulse length count (out of 4096)
+#define SERVOMAX_hand 100 // this is the 'maximum' pulse length count (out of 4096)
+#define SERVOMIN_gear 100 //0 deg
+#define SERVOMAX_gear 600 //190 deg
+#define SERVOMIN_wrist 110 //-3 deg
+#define SERVOMAX_wrist 630 //200 deg
+#define SERVOMIN_arm_2 120 //190 deg
+#define SERVOMAX_arm_2 500 //10 deg
+#define SERVOMIN_arm_1 120 //-5 deg
+#define SERVOMAX_arm_1 610 //200 deg
+#define SERVOMIN_rotatePlatform 100 //-20 deg
+#define SERVOMAX_rotatePlatform 600 //180 deg
+
+// Pins in the shield for each servo
+uint8_t hand = 0;
+uint8_t gear = 2;
+uint8_t wrist = 15;
+uint8_t arm_2 = 6;
+uint8_t arm_1 = 8;
+uint8_t rotatePlatform = 10;
+
+// Global, constant variables
+const float platformHeight = 3.5; // Height of robot's platform w/ wood component (inches)
+const float l_1 = 5.875; // Length of arm1 (inches)
+const float l_2 = 7.25; // Length of arm2 (inches)
+const float l_3 = 2.75; // Length of gear, wrist, and non-claw part of hand (inches)
+const float t_g = 0;
+
+const int calibrationCount = 10;  // Number of data points to measure for calibration
+const float filterFactor = 0.2; // holds the amount of smoothing (0..1). 1 is no smoothing.
+int noiseThreshold_1;   // define noise threshold variable
+int noiseThreshold_2;   // define noise threshold variable
+int currentEMG_1 = 0;   // current reading
+int currentEMG_2 = 0;   // current reading
+int actualEMG_1 = 0;
+int actualEMG_2 = 0;
+
+// Global, constantly updated current position of the arm
+float rCurrent = 5;
+float zCurrent = 3;
+float t_1 = 90;
+
+int setting = 0; //Switch function
+const int right_left = 10;
+const int forward_backward = 9;
+const int up_down = 8;
+const int grab_release = 7;
+const int flipping = 6;
+const int pourLight = 5; 
+
+boolean fb = true;
+boolean ud = true;
+boolean rl = true;
+boolean gr = false;
+boolean flipped = false;
+boolean pouring = false;
+
+//the threshold value to change direction
+float barrier = 600;
+
+//First filtering function
+int readRectifyAndEnvelope(int in, int old) {
+  int r = analogRead(in);   // read
+
+  if (r < 512) {    //rectify
+    r = 1023 - r;
+  }
+  r = (r - 512 ) << 1; //scale 2x
+  int n = filterFactor * r + (1 - filterFactor) * old; //envelope
+  return n;
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  //LED lights
+  pinMode(forward_backward, OUTPUT); //Yellow LED
+  pinMode(up_down, OUTPUT); //Green LED
+  pinMode(right_left, OUTPUT); //Red LED
+  pinMode(grab_release, OUTPUT); //Blue LED
+  pinMode(flipping, OUTPUT); //Blue LED
+  pinMode(pourLight, OUTPUT); //Blue LED
+  
+
+  digitalWrite(forward_backward, LOW);
+  digitalWrite(up_down, LOW);
+  digitalWrite(right_left, LOW);
+  digitalWrite(grab_release, LOW);
+  digitalWrite(flipping, LOW);
+  digitalWrite(pourLight, LOW);
+  
+
+  pwm.begin();
+
+  pwm.setPWMFreq(60);  // Analog servos run at ~60 Hz updates
+
+  moveTo(5, 3, 90);
+  pwm.setPWM(gear, 0, 575);
+  pwm.setPWM(hand, 0, 300);
+
+  for (int i = 0; i < calibrationCount; i++) {  //Measure the EMG noise
+    delay(500);
+    currentEMG_1 = readRectifyAndEnvelope(A0, currentEMG_1);      // read
+    currentEMG_2 = readRectifyAndEnvelope(A1, currentEMG_2);      // read
+    actualEMG_1 = analogRead(A0) - 500;
+    actualEMG_2 = analogRead(A1) - 500;
+
+    Serial.println("Calibration");
+    Serial.println("Relax... ");
+    noiseThreshold_1 += currentEMG_1;
+    noiseThreshold_2 += currentEMG_2;
+  }
+  noiseThreshold_1 = noiseThreshold_1 / calibrationCount; //set threshold
+  noiseThreshold_2 = noiseThreshold_2 / calibrationCount; //set threshold
+
+  Serial.print("Calibration val 1: ");
+  Serial.println(noiseThreshold_1);
+  Serial.print("Calibration val 2: ");
+  Serial.println(noiseThreshold_2);
+  delay(1000);
+
+  yield();
+}
+
+// Function for converting angles to servo units for each individual servo
+float angServoUnits(int servoNo, float angDeg) {
+  switch (servoNo) {
+    case 0:
+      float hand_pos;
+      hand_pos = map(angDeg, 0, 180, SERVOMIN_hand, SERVOMAX_hand);
+      return hand_pos;
+      break;
+
+    case 2:
+      float gear_pos;
+      gear_pos = map(angDeg, 0, 190, SERVOMIN_gear, SERVOMAX_gear);
+      return gear_pos;
+      break;
+
+    case 4:
+      float wrist_pos;
+      wrist_pos = map(angDeg, -3, 200, SERVOMIN_wrist, SERVOMAX_wrist);
+      return wrist_pos;
+      break;
+
+    case 6:
+      float arm_2_pos;
+      arm_2_pos = map(angDeg, 190, 10, SERVOMIN_arm_2, SERVOMAX_arm_2);
+      return arm_2_pos;
+      break;
+
+    case 8:
+      float arm_1_pos;
+      arm_1_pos = map(angDeg, -5, 200, SERVOMIN_arm_1, SERVOMAX_arm_1);
+      return arm_1_pos;
+      break;
+
+    case 10:
+      float rotatePlatform_pos;
+      rotatePlatform_pos = map(angDeg, -20, 180, SERVOMIN_rotatePlatform, SERVOMAX_rotatePlatform);
+      return rotatePlatform_pos;
+      break;
+  }
+}
+
+// "Move to desired end effector" function
+void moveTo(float rE, float zE, float t_1) {
+  // Inverse kinematics calculations
+  float delZ = l_3 * sin(t_g);
+  float delR = l_3 * cos(t_g);
+
+  float z = zE - delZ - platformHeight;
+  float r = rE - delR;
+
+  float l_4 = sqrt(pow(r, 2) + pow(z, 2));
+
+  // Angles in radians
+  float t_2a = acos((pow(l_1, 2) + pow(l_4, 2) - pow(l_2, 2)) / (2 * l_1 * l_4));
+  float t_2b = atan2(z, r);
+  float t_3 = acos((pow(l_2, 2) + pow(l_1, 2) - pow(l_4, 2)) / (2 * l_2 * l_1));
+  float t_4a = PI - t_3 - t_2a;
+  float t_4b = HALF_PI - t_2b;
+  float t_4c = HALF_PI + t_g;
+
+  // Commands for servos to move
+  pwm.setPWM(rotatePlatform, 0, angServoUnits(10, t_1));
+  pwm.setPWM(arm_1, 0, angServoUnits(8, (t_2a + t_2b) * 180 / PI));
+  pwm.setPWM(arm_2, 0, angServoUnits(6, t_3 * 180 / PI));
+  pwm.setPWM(wrist, 0, angServoUnits(4, ((t_3 + t_2a + t_2b) * 180 / PI) - 85));
+
+  rCurrent = rE;
+  zCurrent = zE;
+}
+
+void moveForwardBackward() {
+  if (fb == true){
+    moveTo(rCurrent + 0.1, zCurrent, t_1);
+  }
+  else if (fb == false)
+  {
+    moveTo(rCurrent - 0.1, zCurrent, t_1);
+  }
+}
+
+void moveUpDown() {
+  if (ud == true){
+    moveTo(rCurrent, zCurrent + 0.1, t_1);
+  }
+  else if (ud == false)
+  {
+    moveTo(rCurrent, zCurrent - 0.1, t_1);
+  }
+}
+
+void moveRightLeft() {
+  if (rl == true){
+    moveTo(rCurrent, zCurrent, t_1 + 1);
+    t_1 += 1;
+  }
+  else if (rl == false)
+  {
+    moveTo(rCurrent, zCurrent, t_1 - 1);
+    t_1 -= 1;
+  }
+}
+
+void change() {
+  //Order: Right/Left, Forward/Backward, Up/Down, Grab/Release
+  //Changing the setting variable
+  if (setting <= 5) {
+    setting++;
+  }
+  if (setting > 5) {
+    setting = 0;
+  }
+  delay(1000);
+}
+
+void flip(){
+  if(flipped == false && actualEMG_1 < 0){
+    pwm.setPWM(gear, 0, 140);
+    flipped = true;
+  }
+  else if(flipped == true && actualEMG_1 < 0){
+    pwm.setPWM(gear, 0, 575);
+    flipped = false;
+  }
+}
+
+void pour(){
+  if(pouring == false && flipped == false && actualEMG_1 < 0){
+    for(int i = 575; i >= 358; i--){
+      pwm.setPWM(gear, 0, i);
+      delay(10);
+    }
+    pouring = true;
+  }
+  else if(pouring == true  && flipped == false && actualEMG_1 < 0){
+    for(int i = 358; i <= 575; i++){
+      pwm.setPWM(gear, 0, i);
+      delay(10);
+    }
+    pouring = false;
+  }
+  else if(pouring == true  && flipped == true && actualEMG_1 < 0){
+    for(int i = 358; i >= 140; i--){
+      pwm.setPWM(gear, 0, i);
+      delay(10);
+    }
+    pouring = false;
+  }
+  else if(pouring == false  && flipped == true && actualEMG_1 < 0){
+    for(int i = 140; i <= 358; i++){
+      pwm.setPWM(gear, 0, i);
+      delay(10);
+    }
+    pouring = true;
+  }
+  
+}
+
+void moveHand() {
+  if (gr == true && actualEMG_1 < 0 /*noiseThreshold_1 + barrier*/) {
+    for (int i = 600; i >= 300; i--) {//open
+      pwm.setPWM(hand, 0, i);
+      delay(10);
+      gr = false;
+    }
+  }
+  else  if (gr == false && actualEMG_1 < 0 /*noiseThreshold_1 + barrier*/){
+    for (int i = 300; i <= 600; i++) { //close
+      pwm.setPWM(hand, 0, i);
+      delay(10);
+      gr = true;
+    }
+  }
+}
+
+
+void movement() {
+  if (setting == 0) {
+    digitalWrite(forward_backward, LOW);
+    digitalWrite(up_down, LOW);
+    digitalWrite(right_left, HIGH);
+    digitalWrite(grab_release, LOW);
+    digitalWrite(flipping, LOW);
+    digitalWrite(pourLight, LOW);
+    moveRightLeft();
+  }
+  else if (setting == 1) {
+    digitalWrite(forward_backward, HIGH);
+    digitalWrite(up_down, LOW);
+    digitalWrite(right_left, LOW);
+    digitalWrite(grab_release, LOW);
+    digitalWrite(flipping, LOW);
+    digitalWrite(pourLight, LOW);
+    moveForwardBackward();
+  }
+  else if (setting == 2) {
+    digitalWrite(forward_backward, LOW);
+    digitalWrite(up_down, HIGH);
+    digitalWrite(right_left, LOW);
+    digitalWrite(grab_release, LOW);
+    digitalWrite(flipping, LOW);
+    digitalWrite(pourLight, LOW);
+    moveUpDown();
+  }
+  else if (setting == 3) {
+    digitalWrite(forward_backward, LOW);
+    digitalWrite(up_down, LOW);
+    digitalWrite(right_left, LOW);
+    digitalWrite(grab_release, HIGH);
+    digitalWrite(flipping, LOW);
+    digitalWrite(pourLight, LOW);
+    moveHand();
+  }
+  else if (setting == 4) {
+    digitalWrite(forward_backward, LOW);
+    digitalWrite(up_down, LOW);
+    digitalWrite(right_left, LOW);
+    digitalWrite(grab_release, LOW);
+    digitalWrite(flipping, HIGH);
+    digitalWrite(pourLight, LOW);
+    flip();
+  }
+  else if (setting == 5) {
+    digitalWrite(forward_backward, LOW);
+    digitalWrite(up_down, LOW);
+    digitalWrite(right_left, LOW);
+    digitalWrite(grab_release, LOW);
+    digitalWrite(flipping, LOW);
+    digitalWrite(pourLight, HIGH);
+    pour();
+  }
+}
+
+void loop() {
+  currentEMG_1 = readRectifyAndEnvelope(A0, currentEMG_1); // read and filter
+  currentEMG_2 = readRectifyAndEnvelope(A1, currentEMG_2); // read and filter
+  actualEMG_1 = analogRead(A0) - 200;
+  actualEMG_2 = analogRead(A1) - 200;
+
+  Serial.print("EMG signal 1: ");
+  Serial.print(currentEMG_1);
+  Serial.print("   :: EMG signal 2: ");
+  Serial.print(currentEMG_2);
+  Serial.print("   :: Real EMG  1: ");
+  Serial.print(actualEMG_1);
+  Serial.print("   :: Real EMG  2: ");
+  Serial.print(actualEMG_2);
+  Serial.print("   :: Callibration 1: ");
+  Serial.print(noiseThreshold_1);
+  Serial.print("   :: Callibration 2: ");
+  Serial.print(noiseThreshold_2);
+  Serial.print("   :: Setting: ");
+  Serial.println(setting);
+  if (actualEMG_1 < 0 /*noiseThreshold_1 + barrier */&& setting == 0) { //check if user wants to switch the setting
+    if (rl == true){
+      rl = false; 
+    }
+    else if (rl == false){
+      rl = true;
+    }
+  }
+
+  if (actualEMG_1 < 0 /*noiseThreshold_1 + barrier */&& setting == 1) { //check if user wants to switch the setting
+    if (fb == true){
+      fb = false; 
+    }
+    else if (fb == false){
+      fb = true;
+    }
+  }
+
+  if (actualEMG_1 < 0 /*> noiseThreshold_1 + barrier - 150 */&& setting == 2) { //check if user wants to switch the setting
+    if (ud == true){
+      ud = false; 
+    }
+    else if (ud == false){
+      ud = true;
+    }
+  }
+  
+  if (actualEMG_2 < 0 /*noiseThreshold_2 + barrier - 300 */) { //check if user wants to switch the setting
+    change();
+  }
+  movement();
+}
